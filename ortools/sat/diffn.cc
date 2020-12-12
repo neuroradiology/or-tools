@@ -30,36 +30,77 @@
 namespace operations_research {
 namespace sat {
 
+namespace {
+
+// TODO(user): Use the faster variable only version if all expressions reduce
+// to a single variable?
+void AddIsEqualToMinOf(IntegerVariable min_var,
+                       const std::vector<AffineExpression>& exprs,
+                       Model* model) {
+  std::vector<LinearExpression> converted;
+  for (const AffineExpression& affine : exprs) {
+    LinearExpression e;
+    e.offset = affine.constant;
+    if (affine.var != kNoIntegerVariable) {
+      e.vars.push_back(affine.var);
+      e.coeffs.push_back(affine.coeff);
+    }
+    converted.push_back(e);
+  }
+  LinearExpression target;
+  target.vars.push_back(min_var);
+  target.coeffs.push_back(IntegerValue(1));
+  model->Add(IsEqualToMinOf(target, converted));
+}
+
+void AddIsEqualToMaxOf(IntegerVariable max_var,
+                       const std::vector<AffineExpression>& exprs,
+                       Model* model) {
+  std::vector<LinearExpression> converted;
+  for (const AffineExpression& affine : exprs) {
+    LinearExpression e;
+    e.offset = affine.constant;
+    if (affine.var != kNoIntegerVariable) {
+      e.vars.push_back(affine.var);
+      e.coeffs.push_back(affine.coeff);
+    }
+    converted.push_back(NegationOf(e));
+  }
+  LinearExpression target;
+  target.vars.push_back(NegationOf(max_var));
+  target.coeffs.push_back(IntegerValue(1));
+  model->Add(IsEqualToMinOf(target, converted));
+}
+
+}  // namespace
+
 void AddCumulativeRelaxation(const std::vector<IntervalVariable>& x_intervals,
                              SchedulingConstraintHelper* x,
                              SchedulingConstraintHelper* y, Model* model) {
-  std::vector<IntegerVariable> sizes;
-
   int64 min_starts = kint64max;
   int64 max_ends = kint64min;
+  std::vector<AffineExpression> sizes;
   for (int box = 0; box < y->NumTasks(); ++box) {
-    IntegerVariable s_var = y->DurationVars()[box];
-    if (s_var == kNoIntegerVariable) {
-      s_var = model->Add(ConstantIntegerVariable(y->DurationMin(box).value()));
-    }
-    sizes.push_back(s_var);
     min_starts = std::min(min_starts, y->StartMin(box).value());
     max_ends = std::max(max_ends, y->EndMax(box).value());
+    sizes.push_back(y->Sizes()[box]);
   }
 
   const IntegerVariable min_start_var =
       model->Add(NewIntegerVariable(min_starts, max_ends));
-  model->Add(IsEqualToMinOf(min_start_var, y->StartVars()));
+  AddIsEqualToMinOf(min_start_var, y->Starts(), model);
 
   const IntegerVariable max_end_var =
       model->Add(NewIntegerVariable(min_starts, max_ends));
-  model->Add(IsEqualToMaxOf(max_end_var, y->EndVars()));
+  AddIsEqualToMaxOf(max_end_var, y->Ends(), model);
 
-  const IntegerVariable capacity =
-      model->Add(NewIntegerVariable(0, CapSub(max_ends, min_starts)));
-  const std::vector<int64> coeffs = {-1, -1, 1};
-  model->Add(WeightedSumGreaterOrEqual({capacity, min_start_var, max_end_var},
-                                       coeffs, 0));
+  // (max_end - min_start) >= capacity.
+  const AffineExpression capacity(
+      model->Add(NewIntegerVariable(0, CapSub(max_ends, min_starts))));
+  const std::vector<int64> coeffs = {-capacity.coeff.value(), -1, 1};
+  model->Add(
+      WeightedSumGreaterOrEqual({capacity.var, min_start_var, max_end_var},
+                                coeffs, capacity.constant.value()));
 
   model->Add(Cumulative(x_intervals, sizes, capacity, x));
 }
@@ -133,14 +174,14 @@ NonOverlappingRectanglesEnergyPropagator::
 
 bool NonOverlappingRectanglesEnergyPropagator::Propagate() {
   const int num_boxes = x_.NumTasks();
-  x_.SetTimeDirection(true);
-  y_.SetTimeDirection(true);
+  x_.SynchronizeAndSetTimeDirection(true);
+  y_.SynchronizeAndSetTimeDirection(true);
 
   active_boxes_.clear();
   cached_areas_.resize(num_boxes);
   cached_dimensions_.resize(num_boxes);
   for (int box = 0; box < num_boxes; ++box) {
-    cached_areas_[box] = x_.DurationMin(box) * y_.DurationMin(box);
+    cached_areas_[box] = x_.SizeMin(box) * y_.SizeMin(box);
     if (cached_areas_[box] == 0) continue;
 
     // TODO(user): Also consider shifted end max.
@@ -158,8 +199,13 @@ bool NonOverlappingRectanglesEnergyPropagator::Propagate() {
   for (absl::Span<int> x_boxes : x_split_) {
     SplitDisjointBoxes(y_, x_boxes, &y_split_);
     for (absl::Span<int> y_boxes : y_split_) {
+      IntegerValue total_sum_of_areas(0);
       for (const int box : y_boxes) {
-        RETURN_IF_FALSE(FailWhenEnergyIsTooLarge(box, y_boxes));
+        total_sum_of_areas += cached_areas_[box];
+      }
+      for (const int box : y_boxes) {
+        RETURN_IF_FALSE(
+            FailWhenEnergyIsTooLarge(box, y_boxes, total_sum_of_areas));
       }
     }
   }
@@ -178,7 +224,8 @@ int NonOverlappingRectanglesEnergyPropagator::RegisterWith(
 }
 
 void NonOverlappingRectanglesEnergyPropagator::SortBoxesIntoNeighbors(
-    int box, absl::Span<const int> local_boxes) {
+    int box, absl::Span<const int> local_boxes,
+    IntegerValue total_sum_of_areas) {
   const Dimension& box_dim = cached_dimensions_[box];
 
   neighbors_.clear();
@@ -186,31 +233,29 @@ void NonOverlappingRectanglesEnergyPropagator::SortBoxesIntoNeighbors(
     if (other_box == box) continue;
     const Dimension& other_dim = cached_dimensions_[other_box];
     const IntegerValue span_x = std::max(box_dim.x_max, other_dim.x_max) -
-                                std::min(box_dim.x_min, other_dim.x_min) + 1;
+                                std::min(box_dim.x_min, other_dim.x_min);
     const IntegerValue span_y = std::max(box_dim.y_max, other_dim.y_max) -
-                                std::min(box_dim.y_min, other_dim.y_min) + 1;
-    neighbors_.push_back({other_box, span_x * span_y});
+                                std::min(box_dim.y_min, other_dim.y_min);
+    const IntegerValue bounding_area = span_x * span_y;
+    if (bounding_area < total_sum_of_areas) {
+      neighbors_.push_back({other_box, bounding_area});
+    }
   }
   std::sort(neighbors_.begin(), neighbors_.end());
 }
 
 bool NonOverlappingRectanglesEnergyPropagator::FailWhenEnergyIsTooLarge(
-    int box, absl::Span<const int> local_boxes) {
-  // Note that we only consider the smallest dimension of each boxes here.
-  SortBoxesIntoNeighbors(box, local_boxes);
+    int box, absl::Span<const int> local_boxes,
+    IntegerValue total_sum_of_areas) {
+  SortBoxesIntoNeighbors(box, local_boxes, total_sum_of_areas);
 
   Dimension area = cached_dimensions_[box];
   IntegerValue sum_of_areas = cached_areas_[box];
 
-  IntegerValue total_sum_of_areas = sum_of_areas;
-  for (const Neighbor n : neighbors_) {
-    total_sum_of_areas += cached_areas_[n.box];
-  }
-
   const auto add_box_energy_in_rectangle_reason = [&](int b) {
-    x_.AddEnergyAfterReason(b, x_.DurationMin(b), area.x_min);
+    x_.AddEnergyAfterReason(b, x_.SizeMin(b), area.x_min);
     x_.AddEndMaxReason(b, area.x_max);
-    y_.AddEnergyAfterReason(b, y_.DurationMin(b), area.y_min);
+    y_.AddEnergyAfterReason(b, y_.SizeMin(b), area.y_min);
     y_.AddEndMaxReason(b, area.y_max);
   };
 
@@ -290,7 +335,7 @@ bool NonOverlappingRectanglesDisjunctivePropagator::
   active_boxes_.clear();
   events_time_.clear();
   for (int box = 0; box < x.NumTasks(); ++box) {
-    if (!strict_ && (x.DurationMin(box) == 0 || y.DurationMin(box) == 0)) {
+    if (!strict_ && (x.SizeMin(box) == 0 || y.SizeMin(box) == 0)) {
       continue;
     }
 
@@ -407,8 +452,8 @@ bool NonOverlappingRectanglesDisjunctivePropagator::
 }
 
 bool NonOverlappingRectanglesDisjunctivePropagator::Propagate() {
-  global_x_.SetTimeDirection(true);
-  global_y_.SetTimeDirection(true);
+  global_x_.SynchronizeAndSetTimeDirection(true);
+  global_y_.SynchronizeAndSetTimeDirection(true);
 
   std::function<bool()> inner_propagate;
   if (watcher_->GetCurrentId() == fast_id_) {

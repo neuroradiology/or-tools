@@ -1327,8 +1327,10 @@ bool ImpliedFreePreprocessor::Run(LinearProgram* lp) {
   const int size = num_rows.value();
   // TODO(user) : Replace SumWithNegativeInfiniteAndOneMissing and
   // SumWithPositiveInfiniteAndOneMissing with IntervalSumWithOneMissing.
-  gtl::ITIVector<RowIndex, SumWithNegativeInfiniteAndOneMissing> lb_sums(size);
-  gtl::ITIVector<RowIndex, SumWithPositiveInfiniteAndOneMissing> ub_sums(size);
+  absl::StrongVector<RowIndex, SumWithNegativeInfiniteAndOneMissing> lb_sums(
+      size);
+  absl::StrongVector<RowIndex, SumWithPositiveInfiniteAndOneMissing> ub_sums(
+      size);
 
   // Initialize the sums by adding all the bounds of the variables.
   for (ColIndex col(0); col < num_cols; ++col) {
@@ -1759,7 +1761,16 @@ void UnconstrainedVariablePreprocessor::RemoveZeroCostUnconstrainedVariable(
 bool UnconstrainedVariablePreprocessor::Run(LinearProgram* lp) {
   SCOPED_INSTRUCTION_COUNT(time_limit_);
   RETURN_VALUE_IF_NULL(lp, false);
-  const Fractional tolerance = parameters_.preprocessor_zero_tolerance();
+
+  // To simplify the problem if something is almost zero, we use the low
+  // tolerance (1e-9 by default) to be defensive. But to detect an infeasibility
+  // we want to be sure (especially since the problem is not scaled in the
+  // presolver) so we use an higher tolerance.
+  //
+  // TODO(user): Expose it as a parameter. We could rename both to
+  // preprocessor_low_tolerance and preprocessor_high_tolerance.
+  const Fractional low_tolerance = parameters_.preprocessor_zero_tolerance();
+  const Fractional high_tolerance = 1e-4;
 
   // We start by the dual variable bounds from the constraints.
   const RowIndex num_rows = lp->num_constraints();
@@ -1826,19 +1837,19 @@ bool UnconstrainedVariablePreprocessor::Run(LinearProgram* lp) {
     bool can_be_removed = false;
     Fractional target_bound;
     bool rc_is_away_from_zero;
-    if (rc_ub.Sum() <= tolerance) {
+    if (rc_ub.Sum() <= low_tolerance) {
       can_be_removed = true;
       target_bound = col_ub;
-      rc_is_away_from_zero = rc_ub.Sum() <= -tolerance;
+      rc_is_away_from_zero = rc_ub.Sum() <= -high_tolerance;
       can_be_removed = !may_have_participated_ub_[col];
     }
-    if (rc_lb.Sum() >= -tolerance) {
+    if (rc_lb.Sum() >= -low_tolerance) {
       // The second condition is here for the case we can choose one of the two
       // directions.
       if (!can_be_removed || !IsFinite(target_bound)) {
         can_be_removed = true;
         target_bound = col_lb;
-        rc_is_away_from_zero = rc_lb.Sum() >= tolerance;
+        rc_is_away_from_zero = rc_lb.Sum() >= high_tolerance;
         can_be_removed = !may_have_participated_lb_[col];
       }
     }
@@ -2283,6 +2294,47 @@ void SingletonPreprocessor::UpdateConstraintBoundsWithVariableBounds(
                           lp->constraint_upper_bounds()[e.row] + upper_delta);
 }
 
+bool SingletonPreprocessor::IntegerSingletonColumnIsRemovable(
+    const MatrixEntry& matrix_entry, const LinearProgram& lp) const {
+  DCHECK(in_mip_context_);
+  DCHECK(lp.IsVariableInteger(matrix_entry.col));
+  const SparseMatrix& transpose = lp.GetTransposeSparseMatrix();
+  for (const SparseColumn::Entry entry :
+       transpose.column(RowToColIndex(matrix_entry.row))) {
+    // Check if the variable is integer.
+    if (!lp.IsVariableInteger(RowToColIndex(entry.row()))) {
+      return false;
+    }
+
+    const Fractional coefficient = entry.coefficient();
+    const Fractional coefficient_ratio = coefficient / matrix_entry.coeff;
+    // Check if coefficient_ratio is integer.
+    if (!IsIntegerWithinTolerance(
+            coefficient_ratio, parameters_.solution_feasibility_tolerance())) {
+      return false;
+    }
+  }
+  const Fractional constraint_lb =
+      lp.constraint_lower_bounds()[matrix_entry.row];
+  if (IsFinite(constraint_lb)) {
+    const Fractional lower_bound_ratio = constraint_lb / matrix_entry.coeff;
+    if (!IsIntegerWithinTolerance(
+            lower_bound_ratio, parameters_.solution_feasibility_tolerance())) {
+      return false;
+    }
+  }
+  const Fractional constraint_ub =
+      lp.constraint_upper_bounds()[matrix_entry.row];
+  if (IsFinite(constraint_ub)) {
+    const Fractional upper_bound_ratio = constraint_ub / matrix_entry.coeff;
+    if (!IsIntegerWithinTolerance(
+            upper_bound_ratio, parameters_.solution_feasibility_tolerance())) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void SingletonPreprocessor::DeleteZeroCostSingletonColumn(
     const SparseMatrix& transpose, MatrixEntry e, LinearProgram* lp) {
   const ColIndex transpose_col = RowToColIndex(e.row);
@@ -2666,6 +2718,11 @@ bool SingletonPreprocessor::Run(LinearProgram* lp) {
       column_to_process.pop_back();
       if (column_degree[col] <= 0) continue;
       const MatrixEntry e = GetSingletonColumnMatrixEntry(col, matrix);
+      if (in_mip_context_ && lp->IsVariableInteger(e.col) &&
+          !IntegerSingletonColumnIsRemovable(e, *lp)) {
+        continue;
+      }
+
       // TODO(user): It seems better to process all the singleton columns with
       // a cost of zero first.
       if (lp->objective_coefficients()[col] == 0.0) {
@@ -3448,7 +3505,7 @@ bool ShiftVariableBoundsPreprocessor::Run(LinearProgram* lp) {
   int num_bound_shifts = 0;
   const RowIndex num_rows = lp->num_constraints();
   KahanSum objective_offset;
-  gtl::ITIVector<RowIndex, KahanSum> row_offsets(num_rows.value());
+  absl::StrongVector<RowIndex, KahanSum> row_offsets(num_rows.value());
   offsets_.assign(num_cols, 0.0);
   for (ColIndex col(0); col < num_cols; ++col) {
     if (0.0 < variable_initial_lbs_[col] || 0.0 > variable_initial_ubs_[col]) {
@@ -3538,7 +3595,7 @@ bool ScalingPreprocessor::Run(LinearProgram* lp) {
   // See the doc of these functions for more details.
   // It is important to call Scale() before the other two.
   Scale(lp, &scaler_, parameters_.scaling_method());
-  cost_scaling_factor_ = lp->ScaleObjective();
+  cost_scaling_factor_ = lp->ScaleObjective(parameters_.cost_scaling());
   bound_scaling_factor_ = lp->ScaleBounds();
 
   return true;

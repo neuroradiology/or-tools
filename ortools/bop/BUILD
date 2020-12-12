@@ -1,3 +1,5 @@
+load("@rules_cc//cc:defs.bzl", "cc_proto_library")
+
 package(default_visibility = ["//visibility:public"])
 
 cc_proto_library(
@@ -16,7 +18,7 @@ cc_library(
     deps = [
         "//ortools/base",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
     ],
 )
 
@@ -30,10 +32,10 @@ cc_library(
         ":bop_types",
         "//ortools/base",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
         "@com_google_absl//absl/synchronization",
         "//ortools/glop:lp_solver",
-#        "//ortools/glop",
+        #        "//ortools/glop",
         "//ortools/lp_data:base",
         "//ortools/sat:boolean_problem",
         "//ortools/sat:boolean_problem_cc_proto",
@@ -67,7 +69,7 @@ cc_library(
         ":bop_types",
         "//ortools/base",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
         "//ortools/sat:boolean_problem",
         "//ortools/sat:boolean_problem_cc_proto",
     ],
@@ -86,7 +88,7 @@ cc_library(
         "//ortools/algorithms:sparse_permutation",
         "//ortools/base",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
         "//ortools/base:random",
         "//ortools/base:stl_util",
         "//ortools/glop:lp_solver",
@@ -101,7 +103,7 @@ cc_library(
         "//ortools/util:bitset",
         "//ortools/util:stats",
         "//ortools/util:time_limit",
-        "@com_google_protobuf_cc//:protobuf",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 
@@ -118,7 +120,7 @@ cc_library(
         "//ortools/base",
         "//ortools/base:cleanup",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
         "//ortools/base:random",
         "//ortools/base:stl_util",
         "//ortools/glop:lp_solver",
@@ -131,7 +133,7 @@ cc_library(
         "//ortools/util:bitset",
         "//ortools/util:stats",
         "//ortools/util:time_limit",
-        "@com_google_protobuf_cc//:protobuf",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 
@@ -146,7 +148,7 @@ cc_library(
         ":bop_util",
         "//ortools/base",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
         "//ortools/base:stl_util",
         "//ortools/sat:boolean_problem",
         "//ortools/sat:boolean_problem_cc_proto",
@@ -169,12 +171,12 @@ cc_library(
         "//ortools/base",
         "//ortools/base:hash",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
         "//ortools/base:random",
-        "//ortools/base:statusor",
         "//ortools/sat:boolean_problem",
         "//ortools/sat:boolean_problem_cc_proto",
         "//ortools/sat:sat_solver",
+        "@com_google_absl//absl/status:statusor",
     ],
 )
 
@@ -195,8 +197,8 @@ cc_library(
         "//ortools/base",
         "//ortools/base:hash",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
-        "//ortools/base:statusor",
+        "//ortools/base:strong_vector",
+        "@com_google_absl//absl/status:statusor",
         "//ortools/base:stl_util",
         "//ortools/glop:lp_solver",
         #"//ortools/glop",
@@ -226,7 +228,7 @@ cc_library(
         ":complete_optimizer",
         "//ortools/base",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
         "//ortools/base:random",
         "//ortools/base:stl_util",
         "//ortools/glop:lp_solver",
@@ -240,7 +242,7 @@ cc_library(
         "//ortools/util:bitset",
         "//ortools/util:stats",
         "//ortools/util:time_limit",
-        "@com_google_protobuf_cc//:protobuf",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 
@@ -260,7 +262,7 @@ cc_library(
         ":bop_util",
         "//ortools/base",
         "//ortools/base:int_type",
-        "//ortools/base:int_type_indexed_vector",
+        "//ortools/base:strong_vector",
         "//ortools/base:random",
         "//ortools/base:stl_util",
         "//ortools/glop:lp_solver",
@@ -273,6 +275,6 @@ cc_library(
         "//ortools/util:bitset",
         "//ortools/util:stats",
         "//ortools/util:time_limit",
-        "@com_google_protobuf_cc//:protobuf",
+        "@com_google_protobuf//:protobuf",
     ],
 )

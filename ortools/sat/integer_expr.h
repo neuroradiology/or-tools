@@ -21,7 +21,9 @@
 #include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/macros.h"
+#include "ortools/base/mathutil.h"
 #include "ortools/sat/integer.h"
+#include "ortools/sat/linear_constraint.h"
 #include "ortools/sat/model.h"
 #include "ortools/sat/precedences.h"
 #include "ortools/sat/sat_base.h"
@@ -63,6 +65,11 @@ class IntegerSumLE : public PropagatorInterface {
   bool Propagate() final;
   void RegisterWith(GenericLiteralWatcher* watcher);
 
+  // Same as Propagate() but only consider current root level bounds. This is
+  // mainly useful for the LP propagator since it can find relevant optimal
+  // really late in the search tree.
+  bool PropagateAtLevelZero();
+
  private:
   // Fills integer_reason_ with all the current lower_bounds. The real
   // explanation may require removing one of them, but as an optimization, we
@@ -99,6 +106,33 @@ class IntegerSumLE : public PropagatorInterface {
   std::vector<IntegerValue> reason_coeffs_;
 
   DISALLOW_COPY_AND_ASSIGN(IntegerSumLE);
+};
+
+// This assumes target = SUM_i coeffs[i] * vars[i], and detects that the target
+// must be of the form (a*X + b).
+//
+// This propagator is quite specific and runs only at level zero. For now, this
+// is mainly used for the objective variable. As we fix terms with high
+// objective coefficient, it is possible the only terms left have a common
+// divisor. This close app2-2.mps in less than a second instead of running
+// forever to prove the optimal (in single thread).
+class LevelZeroEquality : PropagatorInterface {
+ public:
+  LevelZeroEquality(IntegerVariable target,
+                    const std::vector<IntegerVariable>& vars,
+                    const std::vector<IntegerValue>& coeffs, Model* model);
+
+  bool Propagate() final;
+
+ private:
+  const IntegerVariable target_;
+  const std::vector<IntegerVariable> vars_;
+  const std::vector<IntegerValue> coeffs_;
+
+  IntegerValue gcd_ = IntegerValue(1);
+
+  Trail* trail_;
+  IntegerTrail* integer_trail_;
 };
 
 // A min (resp max) contraint of the form min == MIN(vars) can be decomposed
@@ -142,30 +176,6 @@ class MinPropagator : public PropagatorInterface {
 
   DISALLOW_COPY_AND_ASSIGN(MinPropagator);
 };
-
-// Helper struct to model linear expression for lin_min/lin_max constraints. The
-// canonical expression should only contain positive coefficients.
-struct LinearExpression {
-  std::vector<IntegerVariable> vars;
-  std::vector<IntegerValue> coeffs;
-  IntegerValue offset = IntegerValue(0);
-};
-
-// Returns the same expression in the canonical form (all positive
-// coefficients).
-LinearExpression CanonicalizeExpr(const LinearExpression& expr);
-
-// Returns lower bound of linear expression using variable bounds of the
-// variables in expression. Assumes Canonical expression (all positive
-// coefficients).
-IntegerValue LinExprLowerBound(const LinearExpression& expr,
-                               const IntegerTrail& integer_trail);
-
-// Returns upper bound of linear expression using variable bounds of the
-// variables in expression. Assumes Canonical expression (all positive
-// coefficients).
-IntegerValue LinExprUpperBound(const LinearExpression& expr,
-                               const IntegerTrail& integer_trail);
 
 // Same as MinPropagator except this works on min = MIN(exprs) where exprs are
 // linear expressions. It uses IntegerSumLE to propagate bounds on the exprs.
@@ -464,18 +474,29 @@ inline std::function<void(Model*)> ConditionalWeightedSumLowerOrEqual(
                                  : integer_trail->UpperBound(vars[i]));
     }
     if (expression_min == upper_bound) {
+      // Tricky: as we create integer literal, we might propagate stuff and
+      // the bounds might change, so if the expression_min increase with the
+      // bound we use, then the literal must be false.
+      IntegerValue non_cached_min;
       for (int i = 0; i < vars.size(); ++i) {
         if (coefficients[i] > 0) {
-          model->Add(
-              Implication(enforcement_literals,
-                          IntegerLiteral::LowerOrEqual(
-                              vars[i], integer_trail->LowerBound(vars[i]))));
+          const IntegerValue lb = integer_trail->LowerBound(vars[i]);
+          non_cached_min += coefficients[i] * lb;
+          model->Add(Implication(enforcement_literals,
+                                 IntegerLiteral::LowerOrEqual(vars[i], lb)));
         } else if (coefficients[i] < 0) {
-          model->Add(
-              Implication(enforcement_literals,
-                          IntegerLiteral::GreaterOrEqual(
-                              vars[i], integer_trail->UpperBound(vars[i]))));
+          const IntegerValue ub = integer_trail->UpperBound(vars[i]);
+          non_cached_min += coefficients[i] * ub;
+          model->Add(Implication(enforcement_literals,
+                                 IntegerLiteral::GreaterOrEqual(vars[i], ub)));
         }
+      }
+      if (non_cached_min > expression_min) {
+        std::vector<Literal> clause;
+        for (const Literal l : enforcement_literals) {
+          clause.push_back(l.Negated());
+        }
+        model->Add(ClauseConstraint(clause));
       }
     } else {
       IntegerSumLE* constraint = new IntegerSumLE(
@@ -525,6 +546,54 @@ inline std::function<void(Model*)> WeightedSumGreaterOrEqualReif(
     model->Add(ConditionalWeightedSumLowerOrEqual(
         {is_ge.Negated()}, vars, coefficients, lower_bound - 1));
   };
+}
+
+// LinearConstraint version.
+inline void LoadLinearConstraint(const LinearConstraint& cst, Model* model) {
+  if (cst.vars.empty()) {
+    if (cst.lb <= 0 && cst.ub >= 0) return;
+    model->GetOrCreate<SatSolver>()->NotifyThatModelIsUnsat();
+    return;
+  }
+
+  // TODO(user): Remove the conversion!
+  std::vector<int64> converted_coeffs;
+  for (const IntegerValue v : cst.coeffs) converted_coeffs.push_back(v.value());
+  if (cst.ub < kMaxIntegerValue) {
+    model->Add(
+        WeightedSumLowerOrEqual(cst.vars, converted_coeffs, cst.ub.value()));
+  }
+  if (cst.lb > kMinIntegerValue) {
+    model->Add(
+        WeightedSumGreaterOrEqual(cst.vars, converted_coeffs, cst.lb.value()));
+  }
+}
+
+inline void LoadConditionalLinearConstraint(
+    const absl::Span<const Literal> enforcement_literals,
+    const LinearConstraint& cst, Model* model) {
+  if (enforcement_literals.empty()) {
+    return LoadLinearConstraint(cst, model);
+  }
+  if (cst.vars.empty()) {
+    if (cst.lb <= 0 && cst.ub >= 0) return;
+    return model->Add(ClauseConstraint(enforcement_literals));
+  }
+
+  // TODO(user): Remove the conversion!
+  std::vector<Literal> converted_literals(enforcement_literals.begin(),
+                                          enforcement_literals.end());
+  std::vector<int64> converted_coeffs;
+  for (const IntegerValue v : cst.coeffs) converted_coeffs.push_back(v.value());
+
+  if (cst.ub < kMaxIntegerValue) {
+    model->Add(ConditionalWeightedSumLowerOrEqual(
+        converted_literals, cst.vars, converted_coeffs, cst.ub.value()));
+  }
+  if (cst.lb > kMinIntegerValue) {
+    model->Add(ConditionalWeightedSumGreaterOrEqual(
+        converted_literals, cst.vars, converted_coeffs, cst.lb.value()));
+  }
 }
 
 // Weighted sum == constant reified.
@@ -682,32 +751,6 @@ inline std::function<void(Model*)> IsEqualToMaxOf(
         negated_vars, NegationOf(max_var), model->GetOrCreate<IntegerTrail>());
     constraint->RegisterWith(model->GetOrCreate<GenericLiteralWatcher>());
     model->TakeOwnership(constraint);
-  };
-}
-
-// Creates an integer variable equal to the minimum of other integer variables.
-inline std::function<IntegerVariable(Model*)> NewMin(
-    const std::vector<IntegerVariable>& vars) {
-  return [=](Model* model) {
-    IntegerTrail* integer_trail = model->GetOrCreate<IntegerTrail>();
-
-    // The trival bounds will be propagated correctly at level zero.
-    IntegerVariable min_var = integer_trail->AddIntegerVariable();
-    model->Add(IsEqualToMinOf(min_var, vars));
-    return min_var;
-  };
-}
-
-// Creates an IntegerVariable equal to the maximum of a set of IntegerVariables.
-inline std::function<IntegerVariable(Model*)> NewMax(
-    const std::vector<IntegerVariable>& vars) {
-  return [=](Model* model) {
-    IntegerTrail* integer_trail = model->GetOrCreate<IntegerTrail>();
-
-    // The trival bounds will be propagated correctly at level zero.
-    IntegerVariable max_var = integer_trail->AddIntegerVariable();
-    model->Add(IsEqualToMaxOf(max_var, vars));
-    return max_var;
   };
 }
 

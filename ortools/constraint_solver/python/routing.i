@@ -12,6 +12,7 @@
 // limitations under the License.
 
 // TODO(user): Refactor this file to adhere to the SWIG style guide.
+//swiglint: disable full-signature
 
 %include "ortools/base/base.i"
 
@@ -63,6 +64,7 @@ DEFINE_INDEX_TYPE_TYPEDEF(
     const std::string& name) {
     $self->AddMatrixDimension(values, capacity, fix_start_cumul_to_zero, name);
   }
+
 }
 
 %ignore operations_research::RoutingModel::RegisterStateDependentTransitCallback;

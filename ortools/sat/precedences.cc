@@ -75,7 +75,12 @@ bool PrecedencesPropagator::Propagate() {
 
   // We can only test that no propagation is left if we didn't enqueue new
   // literal in the presence of optional variables.
-  if (propagation_trail_index_ == trail_->Index()) {
+  //
+  // TODO(user): Because of our code to deal with InPropagationLoop(), this is
+  // not always true. Find a cleaner way to DCHECK() while not failing in this
+  // corner case.
+  if (/*DISABLES CODE*/ (false) &&
+      propagation_trail_index_ == trail_->Index()) {
     DCHECK(NoPropagationLeft(*trail_));
   }
 
@@ -380,7 +385,8 @@ void PrecedencesPropagator::AddArc(
 // horizon. Find an even sparser algorithm?
 void PrecedencesPropagator::PropagateOptionalArcs(Trail* trail) {
   for (const IntegerVariable var : modified_vars_.PositionsSetAtLeastOnce()) {
-    if (var >= impacted_potential_arcs_.size()) break;
+    // The variables are not in increasing order, so we need to continue.
+    if (var >= impacted_potential_arcs_.size()) continue;
 
     // Note that we can currently check the same ArcInfo up to 3 times, one for
     // each of the arc variables: tail, NegationOf(head) and offset_var.
@@ -621,7 +627,7 @@ bool PrecedencesPropagator::BellmanFordTarjan(Trail* trail) {
   bf_can_be_skipped_.resize(num_nodes, false);
   bf_parent_arc_of_.resize(num_nodes, ArcIndex(-1));
   const auto cleanup =
-      ::gtl::MakeCleanup([this]() { CleanUpMarkedArcsAndParents(); });
+      ::absl::MakeCleanup([this]() { CleanUpMarkedArcsAndParents(); });
 
   // The queue initialization is done by InitializeBFQueueWithModifiedNodes().
   while (!bf_queue_.empty()) {
@@ -701,7 +707,8 @@ bool PrecedencesPropagator::BellmanFordTarjan(Trail* trail) {
         // If this is the case, we don't update bf_parent_arc_of_[] so that we
         // don't wrongly detect a positive weight cycle because of this "extra
         // push".
-        if (integer_trail_->LowerBound(arc.head_var) == candidate) {
+        const IntegerValue new_bound = integer_trail_->LowerBound(arc.head_var);
+        if (new_bound == candidate) {
           bf_parent_arc_of_[arc.head_var.value()] = arc_index;
           arcs_[arc_index].is_marked = true;
         } else {
@@ -710,8 +717,10 @@ bool PrecedencesPropagator::BellmanFordTarjan(Trail* trail) {
           bf_parent_arc_of_[arc.head_var.value()] = -1;
         }
 
+        // We do not re-enqueue if we are in a propagation loop and new_bound
+        // was not pushed to candidate or higher.
         bf_can_be_skipped_[arc.head_var.value()] = false;
-        if (!bf_in_queue_[arc.head_var.value()]) {
+        if (!bf_in_queue_[arc.head_var.value()] && new_bound >= candidate) {
           bf_queue_.push_back(arc.head_var.value());
           bf_in_queue_[arc.head_var.value()] = true;
         }
@@ -809,7 +818,7 @@ int PrecedencesPropagator::
   auto* solver = model->GetOrCreate<SatSolver>();
 
   // Fill the set of incoming conditional arcs for each variables.
-  gtl::ITIVector<IntegerVariable, std::vector<ArcIndex>> incoming_arcs_;
+  absl::StrongVector<IntegerVariable, std::vector<ArcIndex>> incoming_arcs_;
   for (ArcIndex arc_index(0); arc_index < arcs_.size(); ++arc_index) {
     const ArcInfo& arc = arcs_[arc_index];
 

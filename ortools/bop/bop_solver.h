@@ -41,10 +41,10 @@
 
 #include "ortools/base/basictypes.h"
 #include "ortools/base/int_type.h"
-#include "ortools/base/int_type_indexed_vector.h"
 #include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/macros.h"
+#include "ortools/base/strong_vector.h"
 #include "ortools/bop/bop_base.h"
 #include "ortools/bop/bop_parameters.pb.h"
 #include "ortools/bop/bop_solution.h"
@@ -60,7 +60,7 @@ namespace bop {
 // Solver of Boolean Optimization Problems based on Local Search.
 class BopSolver {
  public:
-  explicit BopSolver(const LinearBooleanProblem& problem);
+  explicit BopSolver(const sat::LinearBooleanProblem& problem);
   virtual ~BopSolver();
 
   // Parameters management.
@@ -93,7 +93,7 @@ class BopSolver {
   BopSolveStatus InternalMonothreadSolver(TimeLimit* time_limit);
   BopSolveStatus InternalMultithreadSolver(TimeLimit* time_limit);
 
-  const LinearBooleanProblem& problem_;
+  const sat::LinearBooleanProblem& problem_;
   ProblemState problem_state_;
   BopParameters parameters_;
 

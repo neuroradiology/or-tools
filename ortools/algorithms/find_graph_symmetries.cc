@@ -18,6 +18,7 @@
 #include <numeric>
 
 #include "absl/memory/memory.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/time/clock.h"
@@ -26,16 +27,15 @@
 #include "ortools/algorithms/dynamic_partition.h"
 #include "ortools/algorithms/dynamic_permutation.h"
 #include "ortools/algorithms/sparse_permutation.h"
-#include "ortools/base/canonical_errors.h"
 #include "ortools/base/commandlineflags.h"
 #include "ortools/graph/iterators.h"
 #include "ortools/graph/util.h"
 
-DEFINE_bool(minimize_permutation_support_size, false,
-            "Tweak the algorithm to try and minimize the support size"
-            " of the generators produced. This may negatively impact the"
-            " performance, but works great on the sat_holeXXX benchmarks"
-            " to reduce the support size.");
+ABSL_FLAG(bool, minimize_permutation_support_size, false,
+          "Tweak the algorithm to try and minimize the support size"
+          " of the generators produced. This may negatively impact the"
+          " performance, but works great on the sat_holeXXX benchmarks"
+          " to reduce the support size.");
 
 namespace operations_research {
 
@@ -352,7 +352,7 @@ void GetAllOtherRepresentativesInSamePartAs(
 }
 }  // namespace
 
-util::Status GraphSymmetryFinder::FindSymmetries(
+absl::Status GraphSymmetryFinder::FindSymmetries(
     double time_limit_seconds, std::vector<int>* node_equivalence_classes_io,
     std::vector<std::unique_ptr<SparsePermutation>>* generators,
     std::vector<int>* factorized_automorphism_group_size) {
@@ -362,7 +362,7 @@ util::Status GraphSymmetryFinder::FindSymmetries(
   generators->clear();
   factorized_automorphism_group_size->clear();
   if (node_equivalence_classes_io->size() != NumNodes()) {
-    return util::Status(util::error::INVALID_ARGUMENT,
+    return absl::Status(absl::StatusCode::kInvalidArgument,
                         "Invalid 'node_equivalence_classes_io'.");
   }
   DynamicPartition base_partition(*node_equivalence_classes_io);
@@ -373,7 +373,7 @@ util::Status GraphSymmetryFinder::FindSymmetries(
                                           &base_partition);
   }
   if (time_limit_->LimitReached()) {
-    return util::Status(util::error::DEADLINE_EXCEEDED,
+    return absl::Status(absl::StatusCode::kDeadlineExceeded,
                         "During the initial refinement.");
   }
   VLOG(4) << "Base partition: "
@@ -429,7 +429,7 @@ util::Status GraphSymmetryFinder::FindSymmetries(
             << "; partition after: "
             << base_partition.DebugString(DynamicPartition::SORT_BY_PART);
     if (time_limit_->LimitReached()) {
-      return util::Status(util::error::DEADLINE_EXCEEDED,
+      return absl::Status(absl::StatusCode::kDeadlineExceeded,
                           "During the invariant dive.");
     }
   }
@@ -539,10 +539,10 @@ util::Status GraphSymmetryFinder::FindSymmetries(
   IF_STATS_ENABLED(stats_.SetPrintOrder(StatsGroup::SORT_BY_NAME));
   IF_STATS_ENABLED(LOG(INFO) << "Statistics: " << stats_.StatString());
   if (time_limit_->LimitReached()) {
-    return util::Status(util::error::DEADLINE_EXCEEDED,
+    return absl::Status(absl::StatusCode::kDeadlineExceeded,
                         "Some automorphisms were found, but probably not all.");
   }
-  return util::Status::OK;
+  return ::absl::OkStatus();
 }
 
 namespace {
@@ -567,7 +567,7 @@ inline void GetBestMapping(const DynamicPartition& base_partition,
   // but 3) yields much smaller supports for the sat_holeXXX benchmarks, as
   // long as it's combined with the other tweak enabled by
   // FLAGS_minimize_permutation_support_size.
-  if (FLAGS_minimize_permutation_support_size) {
+  if (absl::GetFlag(FLAGS_minimize_permutation_support_size)) {
     // Variant 3).
     for (const int node : base_partition.ElementsInPart(part_index)) {
       if (image_partition.PartOf(node) == part_index) {
@@ -939,7 +939,7 @@ bool GraphSymmetryFinder::ConfirmFullMatchOrFindNextMappingDecision(
 
   // The following clause should be true most of the times, except in some
   // specific use cases.
-  if (!FLAGS_minimize_permutation_support_size) {
+  if (!absl::GetFlag(FLAGS_minimize_permutation_support_size)) {
     // First, we try to map the loose ends of the current permutations: these
     // loose ends can't be mapped to themselves, so we'll have to map them to
     // something anyway.

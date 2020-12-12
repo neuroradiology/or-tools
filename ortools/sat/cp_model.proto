@@ -78,7 +78,7 @@ message IntegerArgumentProto {
 
 message LinearExpressionProto {
   repeated int32 vars = 1;
-  repeated int32 coeffs = 2;
+  repeated int64 coeffs = 2;
   int64 offset = 3;
 }
 
@@ -175,7 +175,8 @@ message ReservoirConstraintProto {
 // For now, we ignore node indices with no incident arc. All the other nodes
 // must have exactly one incoming and one outgoing selected arc (i.e. literal at
 // true). All the selected arcs that are not self-loops must form a single
-// circuit.
+// circuit. Note that multi-arcs are allowed, but only one of them will be true
+// at the same time. Multi-self loop are disallowed though.
 message CircuitConstraintProto {
   repeated int32 tails = 3;
   repeated int32 heads = 4;
@@ -207,14 +208,6 @@ message RoutesConstraintProto {
   // need to add the corresponding constraint to enforce this outside of the LP.
   repeated int32 demands = 4;
   int64 capacity = 5;
-}
-
-// Another routing constraint. This one forces the nexts variables to form a
-// permutation, and cycles of this permutation of length more than 1 (nonloops)
-// to contain exactly one of the distinguished nodes.
-message CircuitCoveringConstraintProto {
-  repeated int32 nexts = 1;
-  repeated int64 distinguished_nodes = 2;
 }
 
 // The values of the n-tuple formed by the given variables can only be one of
@@ -301,31 +294,37 @@ message ConstraintProto {
     BoolArgumentProto bool_xor = 5;
 
     // The int_div constraint forces the target to equal vars[0] / vars[1].
+    // In particular, vars[1] can never take the value 0.
     IntegerArgumentProto int_div = 7;
 
     // The int_mod constraint forces the target to equal vars[0] % vars[1].
+    // The domain of vars[1] must be strictly positive.
     IntegerArgumentProto int_mod = 8;
 
     // The int_max constraint forces the target to equal the maximum of all
     // variables.
-    // TODO(user): Remove int_max in favor of lin_max.
-    IntegerArgumentProto int_max = 9;
-
+    //
     // The lin_max constraint forces the target to equal the maximum of all
     // linear expressions.
+    //
+    // TODO(user): Remove int_max in favor of lin_max.
+    IntegerArgumentProto int_max = 9;
     LinearArgumentProto lin_max = 27;
 
     // The int_min constraint forces the target to equal the minimum of all
     // variables.
+    //
+    // The lin_min constraint forces the target to equal the minimum of all
+    // linear expressions.
+    //
     // TODO(user): Remove int_min in favor of lin_min.
     IntegerArgumentProto int_min = 10;
-
-    // The lin_max constraint forces the target to equal the minimum of all
-    // linear expressions.
     LinearArgumentProto lin_min = 28;
 
-    // The int_min constraint forces the target to equal the product of all
+    // The int_prod constraint forces the target to equal the product of all
     // variables.
+    //
+    // TODO(user): Support more than two terms in the product.
     IntegerArgumentProto int_prod = 11;
 
     // The linear constraint enforces a linear inequality among the variables,
@@ -345,10 +344,6 @@ message ConstraintProto {
 
     // The routes constraint implements the vehicle routing problem.
     RoutesConstraintProto routes = 23;
-
-    // The circuit_covering constraint is similar to the circuit constraint,
-    // but allows multiple non-overlapping cycles instead of just one.
-    CircuitCoveringConstraintProto circuit_covering = 25;
 
     // The table constraint enforces what values a tuple of variables may
     // take.
@@ -511,6 +506,21 @@ message CpModelProto {
   // try to return a solution "close" to this assignment in case of multiple
   // optimal solutions.
   PartialVariableAssignment solution_hint = 6;
+
+  // A list of literals. The model will be solved assuming all these literals
+  // are true. Compared to just fixing the domain of these literals, using this
+  // mechanism is slower but allows in case the model is INFEASIBLE to get a
+  // potentially small subset of them that can be used to explain the
+  // infeasibility.
+  //
+  // Think (IIS), except when you are only concerned by the provided
+  // assumptions. This is powerful as it allows to group a set of logicially
+  // related constraint under only one enforcement literal which can potentially
+  // give you a good and interpretable explanation for infeasiblity.
+  //
+  // Such infeasibility explanation will be available in the
+  // sufficient_assumptions_for_infeasibility response field.
+  repeated int32 assumptions = 7;
 }
 
 // The status returned by a solver trying to solve a CpModelProto.
@@ -523,16 +533,22 @@ enum CpSolverStatus {
   // detailed error by calling ValidateCpModel(model_proto).
   MODEL_INVALID = 1;
 
-  // A feasible solution as been found. For an optimization problem, we still
-  // don't know if it is the optimal one though.
+  // A feasible solution as been found. But the search was stopped before we
+  // could prove optimality or before we enumerated all solutions of a
+  // feasibility problem (if asked).
   FEASIBLE = 2;
 
   // The problem has been proven infeasible.
   INFEASIBLE = 3;
 
-  // An optimal feasible solution has been found. This is also used to indicate
-  // that all solutions where found if this was asked for a satisfiability
-  // problem.
+  // An optimal feasible solution has been found.
+  //
+  // More generally, this status represent a success. So we also return OPTIMAL
+  // if we find a solution for a pure feasiblity problem or if a gap limit has
+  // been specified and we return a solution within this limit. In the case
+  // where we need to return all the feasible solution, this status will only be
+  // returned if we enumerated all of them; If we stopped before, we will return
+  // FEASIBLE.
   OPTIMAL = 4;
 }
 
@@ -540,7 +556,7 @@ enum CpSolverStatus {
 //
 // TODO(user): support returning multiple solutions. Look at the Stubby
 // streaming API as we probably wants to get them as they are found.
-// Next id: 23
+// Next id: 26
 message CpSolverResponse {
   // The status of the solve.
   CpSolverStatus status = 1;
@@ -586,6 +602,23 @@ message CpSolverResponse {
   // sub-optimal feasible ones.
   repeated IntegerVariableProto tightened_variables = 21;
 
+  // A subset of the model "assumptions" field. This will only be filled if the
+  // status is INFEASIBLE. This subset of assumption will be enough to still get
+  // an infeasible problem.
+  //
+  // This is related to what is called the irreducible inconsistent subsystem or
+  // IIS. Except one is only concerned by the provided assumptions. There is
+  // also no guarantee that we return an irreducible (aka minimal subset).
+  // However, this is based on SAT explanation and there is a good chance it is
+  // not too large.
+  //
+  // If you really want a minimal subset, a possible way to get one is by
+  // changing your model to minimize the number of assumptions at false, but
+  // this is likely an harder problem to solve.
+  //
+  // TODO(user): Allows for returning multiple core at once.
+  repeated int32 sufficient_assumptions_for_infeasibility = 23;
+
   // This will be true iff the solver was asked to find all solutions to a
   // satisfiability problem (or all optimal solutions to an optimization
   // problem), and it was successful in doing so.
@@ -599,6 +632,9 @@ message CpSolverResponse {
   int64 num_branches = 12;
   int64 num_binary_propagations = 13;
   int64 num_integer_propagations = 14;
+  int64 num_restarts = 24;
+  int64 num_lp_iterations = 25;
+
   double wall_time = 15;
   double user_time = 16;
   double deterministic_time = 17;

@@ -62,7 +62,7 @@ void RunKnapsackExample() {
 
   std::vector<int64> packed_weights;
   packed_weights.reserve(packed_items.size());
-  for (const auto &it : packed_items) {
+  for (const auto& it : packed_items) {
     packed_weights.push_back(weights[0][it]);
   }
   std::ostringstream packed_weights_ss;
@@ -71,7 +71,7 @@ void RunKnapsackExample() {
   packed_weights_ss << packed_weights.back();
 
   int64 total_weights =
-      std::accumulate(packed_weights.begin(), packed_weights.end(), 0LL);
+      std::accumulate(packed_weights.begin(), packed_weights.end(), int64{0});
 
   LOG(INFO) << "Total value: " << computed_value;
   LOG(INFO) << "Packed items: {" << packed_items_ss.str() << "}";
@@ -81,7 +81,7 @@ void RunKnapsackExample() {
 }
 }  // namespace operations_research
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   operations_research::RunKnapsackExample();
   return EXIT_SUCCESS;
 }

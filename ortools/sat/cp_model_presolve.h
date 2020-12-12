@@ -36,7 +36,8 @@ namespace sat {
 //
 // The image of the mapping should be dense in [0, new_num_variables), this is
 // also CHECKed.
-void ApplyVariableMapping(const std::vector<int>& mapping, CpModelProto* proto);
+void ApplyVariableMapping(const std::vector<int>& mapping,
+                          const PresolveContext& context);
 
 // Presolves the initial content of presolved_model.
 //
@@ -74,7 +75,7 @@ class CpModelPresolver {
   bool PresolveOneConstraint(int c);
 
   // Public for testing only.
-  void SyncDomainAndRemoveEmptyConstraints();
+  void RemoveEmptyConstraints();
 
  private:
   void PresolveToFixPoint();
@@ -104,9 +105,10 @@ class CpModelPresolver {
   bool PresolveInterval(int c, ConstraintProto* ct);
   bool PresolveIntDiv(ConstraintProto* ct);
   bool PresolveIntProd(ConstraintProto* ct);
-  // TODO(user) : Add presolve rules for LinMin.
   bool PresolveIntMin(ConstraintProto* ct);
   bool PresolveIntMax(ConstraintProto* ct);
+  bool PresolveLinMin(ConstraintProto* ct);
+  bool PresolveLinMax(ConstraintProto* ct);
   bool PresolveIntAbs(ConstraintProto* ct);
   bool PresolveBoolXor(ConstraintProto* ct);
   bool PresolveAtMostOne(ConstraintProto* ct);
@@ -120,6 +122,7 @@ class CpModelPresolver {
   bool RemoveSingletonInLinear(ConstraintProto* ct);
   bool PresolveSmallLinear(ConstraintProto* ct);
   bool PresolveLinearOnBooleans(ConstraintProto* ct);
+  void PresolveLinearEqualityModuloTwo(ConstraintProto* ct);
 
   // SetPPC is short for set packing, partitioning and covering constraints.
   // These are sum of booleans <=, = and >= 1 respectively.
@@ -138,7 +141,9 @@ class CpModelPresolver {
   void ExtractAtMostOneFromLinear(ConstraintProto* ct);
 
   void DivideLinearByGcd(ConstraintProto* ct);
-  void ExtractEnforcementLiteralFromLinearConstraint(ConstraintProto* ct);
+
+  void ExtractEnforcementLiteralFromLinearConstraint(int ct_index,
+                                                     ConstraintProto* ct);
 
   // Extracts cliques from bool_and and small at_most_one constraints and
   // transforms them into maximal cliques.
@@ -153,12 +158,15 @@ class CpModelPresolver {
 
   void MergeNoOverlapConstraints();
 
-  void RemoveUnusedEquivalentVariables();
+  // Boths function are responsible for dealing with affine relations.
+  // The second one returns false on UNSAT.
+  void EncodeAllAffineRelations();
+  bool PresolveAffineRelationIfAny(int var);
 
   bool IntervalsCanIntersect(const IntervalConstraintProto& interval1,
                              const IntervalConstraintProto& interval2);
 
-  bool ExploitEquivalenceRelations(ConstraintProto* ct);
+  bool ExploitEquivalenceRelations(int c, ConstraintProto* ct);
 
   ABSL_MUST_USE_RESULT bool RemoveConstraint(ConstraintProto* ct);
   ABSL_MUST_USE_RESULT bool MarkConstraintAsFalse(ConstraintProto* ct);

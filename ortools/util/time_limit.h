@@ -38,13 +38,13 @@
  * Enables changing the behavior of the TimeLimit class to use -b usertime
  * instead of \b walltime. This is mainly useful for benchmarks.
  */
-DECLARE_bool(time_limit_use_usertime);
+ABSL_DECLARE_FLAG(bool, time_limit_use_usertime);
 
 /**
  * Adds support to measure the number of executed instructions in the TimeLimit
  * class.
  */
-DECLARE_bool(time_limit_use_instruction_count);
+ABSL_DECLARE_FLAG(bool, time_limit_use_instruction_count);
 
 namespace operations_research {
 
@@ -267,9 +267,7 @@ class TimeLimit {
    * i.e. \c LimitReached() returns true when the value of
    * external_boolean_as_limit is true whatever the time limits are.
    *
-   * Note 1: The external_boolean_as_limit can be modified during solve.
-   *
-   * Note 2: \c ResetLimitFromParameters() will set this Boolean to false.
+   * Note : The external_boolean_as_limit can be modified during solve.
    */
   void RegisterExternalBooleanAsLimit(
       std::atomic<bool>* external_boolean_as_limit) {
@@ -285,7 +283,7 @@ class TimeLimit {
 
   /**
    * Sets new time limits. Note that this does not reset the running max nor
-   * any registered external boolean or calls to RegisterSigintHandler().
+   * any registered external Boolean.
    */
   template <typename Parameters>
   void ResetLimitFromParameters(const Parameters& parameters);
@@ -389,9 +387,9 @@ class SharedTimeLimit {
 
  private:
   mutable absl::Mutex mutex_;
-  TimeLimit* time_limit_ GUARDED_BY(mutex_);
-  std::atomic<bool> stopped_boolean_ GUARDED_BY(mutex_);
-  std::atomic<bool>* stopped_ GUARDED_BY(mutex_);
+  TimeLimit* time_limit_ ABSL_GUARDED_BY(mutex_);
+  std::atomic<bool> stopped_boolean_ ABSL_GUARDED_BY(mutex_);
+  std::atomic<bool>* stopped_ ABSL_GUARDED_BY(mutex_);
 };
 
 /**
@@ -481,19 +479,16 @@ inline TimeLimit::TimeLimit(double limit_in_seconds, double deterministic_limit,
 inline void TimeLimit::ResetTimers(double limit_in_seconds,
                                    double deterministic_limit,
                                    double instruction_limit) {
-  if (external_boolean_as_limit_ != nullptr) {
-    *external_boolean_as_limit_ = false;
-  }
   elapsed_deterministic_time_ = 0.0;
   deterministic_limit_ = deterministic_limit;
   instruction_limit_ = instruction_limit;
 
-  if (FLAGS_time_limit_use_usertime) {
+  if (absl::GetFlag(FLAGS_time_limit_use_usertime)) {
     user_timer_.Start();
     limit_in_seconds_ = limit_in_seconds;
   }
 #ifdef HAS_PERF_SUBSYSTEM
-  if (FLAGS_time_limit_use_instruction_count) {
+  if (absl::GetFlag(FLAGS_time_limit_use_instruction_count)) {
     perf_subsystem_.CleanUp();
     perf_subsystem_.AddEvent(GetInstructionRetiredEventName());
     perf_subsystem_.StartCollecting();
@@ -526,7 +521,7 @@ inline void TimeLimit::MergeWithGlobalTimeLimit(TimeLimit* other) {
 
 inline double TimeLimit::ReadInstructionCounter() {
 #ifdef HAS_PERF_SUBSYSTEM
-  if (FLAGS_time_limit_use_instruction_count) {
+  if (absl::GetFlag(FLAGS_time_limit_use_instruction_count)) {
     return perf_subsystem_.ReadCounters().GetScaledOrDie(
         GetInstructionRetiredEventName());
   }
@@ -554,7 +549,7 @@ inline bool TimeLimit::LimitReached() {
   running_max_.Add(std::max(safety_buffer_ns_, current_ns - last_ns_));
   last_ns_ = current_ns;
   if (current_ns + running_max_.GetCurrentMax() >= limit_ns_) {
-    if (FLAGS_time_limit_use_usertime) {
+    if (absl::GetFlag(FLAGS_time_limit_use_usertime)) {
       // To avoid making many system calls, we only check the user time when
       // the "absolute" time limit has been reached. Note that the user time
       // should advance more slowly, so this is correct.
@@ -576,7 +571,7 @@ inline double TimeLimit::GetTimeLeft() const {
   if (limit_ns_ == kint64max) return std::numeric_limits<double>::infinity();
   const int64 delta_ns = limit_ns_ - absl::GetCurrentTimeNanos();
   if (delta_ns < 0) return 0.0;
-  if (FLAGS_time_limit_use_usertime) {
+  if (absl::GetFlag(FLAGS_time_limit_use_usertime)) {
     return std::max(limit_in_seconds_ - user_timer_.Get(), 0.0);
   } else {
     return delta_ns * 1e-9;

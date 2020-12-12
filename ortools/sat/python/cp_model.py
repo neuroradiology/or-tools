@@ -51,7 +51,6 @@ from __future__ import print_function
 import collections
 import numbers
 import time
-from six import iteritems
 
 from ortools.sat import cp_model_pb2
 from ortools.sat import sat_parameters_pb2
@@ -284,8 +283,7 @@ class LinearExpr(object):
             cp_model_helper.AssertIsInt64(arg)
             if arg == INT_MIN:
                 raise ArithmeticError('< INT_MIN is not supported')
-            return BoundedLinearExpression(
-                self, [INT_MIN, cp_model_helper.CapInt64(arg - 1)])
+            return BoundedLinearExpression(self, [INT_MIN, arg - 1])
         else:
             return BoundedLinearExpression(self - arg, [INT_MIN, -1])
 
@@ -294,8 +292,7 @@ class LinearExpr(object):
             cp_model_helper.AssertIsInt64(arg)
             if arg == INT_MAX:
                 raise ArithmeticError('> INT_MAX is not supported')
-            return BoundedLinearExpression(
-                self, [cp_model_helper.CapInt64(arg + 1), INT_MAX])
+            return BoundedLinearExpression(self, [arg + 1, INT_MAX])
         else:
             return BoundedLinearExpression(self - arg, [1, INT_MAX])
 
@@ -309,11 +306,8 @@ class LinearExpr(object):
             elif arg == INT_MIN:
                 return BoundedLinearExpression(self, [INT_MIN + 1, INT_MAX])
             else:
-                return BoundedLinearExpression(self, [
-                    INT_MIN,
-                    cp_model_helper.CapInt64(arg - 1),
-                    cp_model_helper.CapInt64(arg + 1), INT_MAX
-                ])
+                return BoundedLinearExpression(
+                    self, [INT_MIN, arg - 1, arg + 1, INT_MAX])
         else:
             return BoundedLinearExpression(self - arg,
                                            [INT_MIN, -1, 1, INT_MAX])
@@ -572,9 +566,9 @@ class Constraint(object):
   The purpose of this class is to allow specification of enforcement literals
   for this constraint.
 
-      b = model.BoolVar('b')
-      x = model.IntVar(0, 10, 'x')
-      y = model.IntVar(0, 10, 'y')
+      b = model.NewBoolVar('b')
+      x = model.NewIntVar(0, 10, 'x')
+      y = model.NewIntVar(0, 10, 'y')
 
       model.Add(x + 2 * y == 5).OnlyEnforceIf(b.Not())
   """
@@ -753,7 +747,7 @@ class CpModel(object):
             ct = Constraint(self.__model.constraints)
             model_ct = self.__model.constraints[ct.Index()]
             coeffs_map, constant = linear_expr.GetVarValueMap()
-            for t in iteritems(coeffs_map):
+            for t in coeffs_map.items():
                 if not isinstance(t[0], IntVar):
                     raise TypeError('Wrong argument' + str(t))
                 cp_model_helper.AssertIsInt64(t[1])
@@ -816,6 +810,9 @@ class CpModel(object):
 
         if not variables:
             raise ValueError('AddElement expects a non-empty variables array')
+
+        if isinstance(index, numbers.Integral):
+            return self.Add(list(variables)[index] == target)
 
         ct = Constraint(self.__model.constraints)
         model_ct = self.__model.constraints[ct.Index()]
@@ -980,7 +977,7 @@ class CpModel(object):
             raise ValueError('AddAutomaton expects some final states')
 
         if not transition_triples:
-            raise ValueError('AddAutomaton expects some transtion triples')
+            raise ValueError('AddAutomaton expects some transition triples')
 
         ct = Constraint(self.__model.constraints)
         model_ct = self.__model.constraints[ct.Index()]
@@ -1457,7 +1454,7 @@ class CpModel(object):
             else:
                 self.__model.objective.scaling_factor = -1
                 self.__model.objective.offset = -constant
-            for v, c, in iteritems(coeffs_map):
+            for v, c, in coeffs_map.items():
                 self.__model.objective.coeffs.append(c)
                 if minimize:
                     self.__model.objective.vars.append(v.Index())
@@ -1506,6 +1503,10 @@ class CpModel(object):
     def Validate(self):
         """Returns a string indicating that the model is invalid."""
         return pywrapsat.SatHelper.ValidateModel(self.__model)
+
+    def ExportToFile(self, file):
+        """Write the model as a ascii protocol buffer to 'file'."""
+        return pywrapsat.SatHelper.WriteModelToFile(self.__model, file)
 
     def AssertIsBooleanVariable(self, x):
         if isinstance(x, IntVar):
@@ -1648,8 +1649,10 @@ class CpSolver(object):
         """Returns the best lower (upper) bound found when min(max)imizing."""
         return self.__solution.best_objective_bound
 
-    def StatusName(self, status):
+    def StatusName(self, status=None):
         """Returns the name of the status returned by Solve()."""
+        if status is None:
+            status = self.__solution.status
         return cp_model_pb2.CpSolverStatus.Name(status)
 
     def NumBooleans(self):

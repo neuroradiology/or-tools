@@ -33,6 +33,16 @@ void AddIndices(const IntList& indices, std::vector<int>* output) {
 
 }  // namespace
 
+void SetToNegatedLinearExpression(const LinearExpressionProto& input_expr,
+                                  LinearExpressionProto* output_negated_expr) {
+  output_negated_expr->Clear();
+  for (int i = 0; i < input_expr.vars_size(); ++i) {
+    output_negated_expr->add_vars(NegatedRef(input_expr.vars(i)));
+    output_negated_expr->add_coeffs(input_expr.coeffs(i));
+  }
+  output_negated_expr->set_offset(-input_expr.offset());
+}
+
 IndexReferences GetReferencesUsedByConstraint(const ConstraintProto& ct) {
   IndexReferences output;
   switch (ct.constraint_case()) {
@@ -98,9 +108,6 @@ IndexReferences GetReferencesUsedByConstraint(const ConstraintProto& ct) {
       break;
     case ConstraintProto::ConstraintCase::kRoutes:
       AddIndices(ct.routes().literals(), &output.literals);
-      break;
-    case ConstraintProto::ConstraintCase::kCircuitCovering:
-      AddIndices(ct.circuit_covering().nexts(), &output.variables);
       break;
     case ConstraintProto::ConstraintCase::kInverse:
       AddIndices(ct.inverse().f_direct(), &output.variables);
@@ -189,8 +196,6 @@ void ApplyToAllLiteralIndices(const std::function<void(int*)>& f,
     case ConstraintProto::ConstraintCase::kRoutes:
       APPLY_TO_REPEATED_FIELD(routes, literals);
       break;
-    case ConstraintProto::ConstraintCase::kCircuitCovering:
-      break;
     case ConstraintProto::ConstraintCase::kInverse:
       break;
     case ConstraintProto::ConstraintCase::kReservoir:
@@ -271,9 +276,6 @@ void ApplyToAllVariableIndices(const std::function<void(int*)>& f,
       break;
     case ConstraintProto::ConstraintCase::kRoutes:
       break;
-    case ConstraintProto::ConstraintCase::kCircuitCovering:
-      APPLY_TO_REPEATED_FIELD(circuit_covering, nexts);
-      break;
     case ConstraintProto::ConstraintCase::kInverse:
       APPLY_TO_REPEATED_FIELD(inverse, f_direct);
       APPLY_TO_REPEATED_FIELD(inverse, f_inverse);
@@ -340,8 +342,6 @@ void ApplyToAllIntervalIndices(const std::function<void(int*)>& f,
       break;
     case ConstraintProto::ConstraintCase::kRoutes:
       break;
-    case ConstraintProto::ConstraintCase::kCircuitCovering:
-      break;
     case ConstraintProto::ConstraintCase::kInverse:
       break;
     case ConstraintProto::ConstraintCase::kReservoir:
@@ -405,8 +405,6 @@ std::string ConstraintCaseName(
       return "kCircuit";
     case ConstraintProto::ConstraintCase::kRoutes:
       return "kRoutes";
-    case ConstraintProto::ConstraintCase::kCircuitCovering:
-      return "kCircuitCovering";
     case ConstraintProto::ConstraintCase::kInverse:
       return "kInverse";
     case ConstraintProto::ConstraintCase::kReservoir:
@@ -477,8 +475,6 @@ std::vector<int> UsedIntervals(const ConstraintProto& ct) {
     case ConstraintProto::ConstraintCase::kCircuit:
       break;
     case ConstraintProto::ConstraintCase::kRoutes:
-      break;
-    case ConstraintProto::ConstraintCase::kCircuitCovering:
       break;
     case ConstraintProto::ConstraintCase::kInverse:
       break;

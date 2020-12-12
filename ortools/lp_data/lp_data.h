@@ -33,9 +33,9 @@
 #include "absl/container/flat_hash_set.h"
 #include "ortools/base/hash.h"
 #include "ortools/base/int_type.h"
-#include "ortools/base/int_type_indexed_vector.h"
 #include "ortools/base/logging.h"  // for CHECK*
 #include "ortools/base/macros.h"   // for DISALLOW_COPY_AND_ASSIGN, NULL
+#include "ortools/base/strong_vector.h"
 #include "ortools/glop/parameters.pb.h"
 #include "ortools/lp_data/lp_types.h"
 #include "ortools/lp_data/sparse.h"
@@ -108,8 +108,8 @@ class LinearProgram {
   // FindOrCreate{Variable|Constraint}().
   // TODO(user): Add PopulateIdsFromNames() so names added via
   // Set{Variable|Constraint}Name() can be found.
-  void SetVariableName(ColIndex col, const std::string& name);
-  void SetConstraintName(RowIndex row, const std::string& name);
+  void SetVariableName(ColIndex col, absl::string_view name);
+  void SetConstraintName(RowIndex row, absl::string_view name);
 
   // Set the type of the variable.
   void SetVariableType(ColIndex col, VariableType type);
@@ -496,7 +496,7 @@ class LinearProgram {
   //   multiplying the new ones by the returned factor.
   // - For ScaleBounds(), the old variable and constraint bounds can be
   //   retrieved by multiplying the new ones by the returned factor.
-  Fractional ScaleObjective();
+  Fractional ScaleObjective(GlopParameters::CostScalingAlgorithm method);
   Fractional ScaleBounds();
 
   // Removes the given row indices from the LinearProgram.

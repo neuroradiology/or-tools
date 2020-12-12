@@ -110,7 +110,7 @@ inline std::ostream& operator<<(std::ostream& os,
 // information that the solver learned about it at a given time.
 class ProblemState {
  public:
-  explicit ProblemState(const LinearBooleanProblem& problem);
+  explicit ProblemState(const sat::LinearBooleanProblem& problem);
 
   // Sets parameters, used for instance to get the tolerance, the gap limit...
   void SetParameters(const BopParameters& parameters) {
@@ -170,7 +170,7 @@ class ProblemState {
   // Returns true when the variable var is fixed in the current problem state.
   // The value of the fixed variable is returned by GetVariableFixedValue(var).
   bool IsVariableFixed(VariableIndex var) const { return is_fixed_[var]; }
-  const gtl::ITIVector<VariableIndex, bool>& is_fixed() const {
+  const absl::StrongVector<VariableIndex, bool>& is_fixed() const {
     return is_fixed_;
   }
 
@@ -179,7 +179,7 @@ class ProblemState {
   bool GetVariableFixedValue(VariableIndex var) const {
     return fixed_values_[var];
   }
-  const gtl::ITIVector<VariableIndex, bool>& fixed_values() const {
+  const absl::StrongVector<VariableIndex, bool>& fixed_values() const {
     return fixed_values_;
   }
 
@@ -195,7 +195,7 @@ class ProblemState {
   // Returns the original problem. Note that the current problem might be
   // different, e.g. fixed variables, but equivalent, i.e. a solution to one
   // should be a solution to the other too.
-  const LinearBooleanProblem& original_problem() const {
+  const sat::LinearBooleanProblem& original_problem() const {
     return original_problem_;
   }
 
@@ -220,11 +220,11 @@ class ProblemState {
   void SynchronizationDone();
 
  private:
-  const LinearBooleanProblem& original_problem_;
+  const sat::LinearBooleanProblem& original_problem_;
   BopParameters parameters_;
   int64 update_stamp_;
-  gtl::ITIVector<VariableIndex, bool> is_fixed_;
-  gtl::ITIVector<VariableIndex, bool> fixed_values_;
+  absl::StrongVector<VariableIndex, bool> is_fixed_;
+  absl::StrongVector<VariableIndex, bool> fixed_values_;
   glop::DenseRow lp_values_;
   BopSolution solution_;
   std::vector<bool> assignment_preference_;
@@ -243,7 +243,7 @@ class ProblemState {
 // with the problem state in order to get a more constrained problem to be used
 // by the next called optimizer.
 struct LearnedInfo {
-  explicit LearnedInfo(const LinearBooleanProblem& problem)
+  explicit LearnedInfo(const sat::LinearBooleanProblem& problem)
       : fixed_literals(),
         solution(problem, "AllZero"),
         lower_bound(kint64min),

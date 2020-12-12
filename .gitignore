@@ -8,6 +8,7 @@ dependencies/check.log
 
 or-tools*.tar.gz
 or-tools*.zip
+*.snk
 *.a
 *.o
 *.so
@@ -29,6 +30,7 @@ temp_test/
 temp_fz/
 temp_fz_test/
 temp_python*
+temp_java/
 temp_dotnet/
 temp_dotnet_test/
 temp_archive/
@@ -41,6 +43,8 @@ examples/notebook/.ipynb_checkpoints
 ortools/bazel-*
 examples/bazel-*
 bazel-*
+
+.vagrant/
 
 tools/docker/export
 
@@ -55,6 +59,10 @@ cache/
 .DS_Store
 **/.vs/*
 
+ortools/linear_solver/lpi_glop.cc
+
+ortools/dotnet/*.props
+ortools/dotnet/*.png
 ortools/dotnet/*/*.csproj
 ortools/dotnet/*/*.fsproj
 ortools/dotnet/*/runtime.json

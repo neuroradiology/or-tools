@@ -18,6 +18,7 @@
 
 #include "ortools/sat/cp_model_loader.h"
 #include "ortools/sat/integer.h"
+#include "ortools/sat/linear_constraint.h"
 #include "ortools/sat/linear_programming_constraint.h"
 #include "ortools/sat/model.h"
 
@@ -75,16 +76,21 @@ void TryToLinearizeConstraint(const CpModelProto& model_proto,
                               int linearization_level,
                               LinearRelaxation* relaxation);
 
-// Adds linearization of no overlap constraints. For each pair of intervals, we
-// add linear constraints enforcing precedence of one over other. We check the
-// bounds and only linearize the pairs which are intersecting. We ignore the
-// intervals with enforcement literal. Note that we might create new variables
-// for each pair of intervals and this might cause addition of quadratic number
-// of new variables.
+// Adds linearization of no overlap constraints.
+// It adds an energetic equation linking the duration of all potential tasks to
+// the actual span of the no overlap constraint.
 void AppendNoOverlapRelaxation(const CpModelProto& model_proto,
                                const ConstraintProto& ct,
                                int linearization_level, Model* model,
                                LinearRelaxation* relaxation);
+
+// Adds linearization of cumulative constraints.The second part adds an
+// energetic equation linking the duration of all potential tasks to the actual
+// max span * capacity of the cumulative constraint.
+void AppendCumulativeRelaxation(const CpModelProto& model_proto,
+                                const ConstraintProto& ct,
+                                int linearization_level, Model* model,
+                                LinearRelaxation* relaxation);
 
 // Adds linearization of int max constraints. This can also be used to linearize
 // int min with negated variables.
@@ -92,6 +98,29 @@ void AppendMaxRelaxation(IntegerVariable target,
                          const std::vector<IntegerVariable>& vars,
                          int linearization_level, Model* model,
                          LinearRelaxation* relaxation);
+
+// Adds linearization of int max constraints. Returns a vector of z vars such
+// that: z_vars[l] == 1 <=> target = exprs[l].
+//
+// Consider the Lin Max constraint with d expressions and n variables in the
+// form: target = max {exprs[l] = Sum (wli * xi + bl)}. l in {1,..,d}.
+//   Li = lower bound of xi
+//   Ui = upper bound of xi.
+// Let zl be in {0,1} for all l in {1,..,d}.
+// The target = exprs[l] when zl = 1.
+//
+// The following is a valid linearization for Lin Max.
+//   target >= exprs[l], for all l in {1,..,d}
+//   target <= Sum_i(wki * xi) + Sum_l((Nkl + bl) * zl), for all k in {1,..,d}
+// Where Nkl is a large number defined as:
+//   Nkl = Sum_i(max((wli - wki)*Li, (wli - wki)*Ui))
+//       = Sum (max corner difference for variable i, target expr k, max expr l)
+// Reference: "Strong mixed-integer programming formulations for trained neural
+// networks" by Ross Anderson et. (https://arxiv.org/pdf/1811.01988.pdf).
+// TODO(user): Support linear expression as target.
+std::vector<IntegerVariable> AppendLinMaxRelaxation(
+    IntegerVariable target, const std::vector<LinearExpression>& exprs,
+    Model* model, LinearRelaxation* relaxation);
 
 // Appends linear constraints to the relaxation. This also handles the
 // relaxation of linear constraints with enforcement literals.

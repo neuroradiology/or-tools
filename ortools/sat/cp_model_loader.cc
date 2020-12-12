@@ -24,10 +24,10 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "ortools/base/int_type.h"
-#include "ortools/base/int_type_indexed_vector.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/map_util.h"
 #include "ortools/base/stl_util.h"
+#include "ortools/base/strong_vector.h"
 #include "ortools/sat/all_different.h"
 #include "ortools/sat/circuit.h"
 #include "ortools/sat/cp_constraints.h"
@@ -745,8 +745,8 @@ class FullEncodingFixedPointComputer {
   std::vector<int> variables_to_propagate_;
   std::vector<std::vector<ConstraintIndex>> variable_watchers_;
 
-  gtl::ITIVector<ConstraintIndex, bool> constraint_is_finished_;
-  gtl::ITIVector<ConstraintIndex, bool> constraint_is_registered_;
+  absl::StrongVector<ConstraintIndex, bool> constraint_is_finished_;
+  absl::StrongVector<ConstraintIndex, bool> constraint_is_registered_;
 
   absl::flat_hash_map<int, absl::flat_hash_set<int>>
       variables_to_equal_or_diff_variables_;
@@ -1054,7 +1054,6 @@ void LoadEquivalenceNeqAC(const std::vector<Literal> enforcement_literal,
 
 void LoadLinearConstraint(const ConstraintProto& ct, Model* m) {
   auto* mapping = m->GetOrCreate<CpModelMapping>();
-
   if (ct.linear().vars().empty()) {
     const Domain rhs = ReadDomainFromProto(ct.linear());
     if (rhs.Contains(0)) return;
@@ -1171,6 +1170,11 @@ void LoadLinearConstraint(const ConstraintProto& ct, Model* m) {
       }
     }
   } else {
+    // In this case, we can create just one Boolean instead of two since one
+    // is the negation of the other.
+    const bool special_case =
+        ct.enforcement_literal().empty() && ct.linear().domain_size() == 4;
+
     std::vector<Literal> clause;
     for (int i = 0; i < ct.linear().domain_size(); i += 2) {
       int64 lb = ct.linear().domain(i);
@@ -1178,8 +1182,11 @@ void LoadLinearConstraint(const ConstraintProto& ct, Model* m) {
       if (min_sum >= lb) lb = kint64min;
       if (max_sum <= ub) ub = kint64max;
 
-      const Literal subdomain_literal(m->Add(NewBooleanVariable()), true);
+      const Literal subdomain_literal(
+          special_case && i > 0 ? clause.back().Negated()
+                                : Literal(m->Add(NewBooleanVariable()), true));
       clause.push_back(subdomain_literal);
+
       if (lb != kint64min) {
         m->Add(ConditionalWeightedSumGreaterOrEqual({subdomain_literal}, vars,
                                                     coeffs, lb));
@@ -1192,10 +1199,7 @@ void LoadLinearConstraint(const ConstraintProto& ct, Model* m) {
     for (const int ref : ct.enforcement_literal()) {
       clause.push_back(mapping->Literal(ref).Negated());
     }
-
-    // TODO(user): In the cases where this clause only contains two literals,
-    // then we could have only used one literal and its negation above.
-    m->Add(ClauseConstraint(clause));
+    if (!special_case) m->Add(ClauseConstraint(clause));
   }
 }
 
@@ -1271,16 +1275,18 @@ LinearExpression GetExprFromProto(const LinearExpressionProto& expr_proto,
   return CanonicalizeExpr(expr);
 }
 
-void LoadLinMinConstraint(const ConstraintProto& ct, Model* m) {
+void LoadLinMaxConstraint(const ConstraintProto& ct, Model* m) {
   auto* mapping = m->GetOrCreate<CpModelMapping>();
-  const LinearExpression min =
-      GetExprFromProto(ct.lin_min().target(), *mapping);
-  std::vector<LinearExpression> exprs;
-  exprs.reserve(ct.lin_min().exprs_size());
-  for (int i = 0; i < ct.lin_min().exprs_size(); ++i) {
-    exprs.push_back(GetExprFromProto(ct.lin_min().exprs(i), *mapping));
+  const LinearExpression max =
+      GetExprFromProto(ct.lin_max().target(), *mapping);
+  std::vector<LinearExpression> negated_exprs;
+  negated_exprs.reserve(ct.lin_max().exprs_size());
+  for (int i = 0; i < ct.lin_max().exprs_size(); ++i) {
+    negated_exprs.push_back(
+        NegationOf(GetExprFromProto(ct.lin_max().exprs(i), *mapping)));
   }
-  m->Add(IsEqualToMinOf(min, exprs));
+  // TODO(user): Consider replacing the min propagator by max.
+  m->Add(IsEqualToMinOf(NegationOf(max), negated_exprs));
 }
 
 void LoadIntMaxConstraint(const ConstraintProto& ct, Model* m) {
@@ -1312,9 +1318,12 @@ void LoadCumulativeConstraint(const ConstraintProto& ct, Model* m) {
   auto* mapping = m->GetOrCreate<CpModelMapping>();
   const std::vector<IntervalVariable> intervals =
       mapping->Intervals(ct.cumulative().intervals());
-  const IntegerVariable capacity = mapping->Integer(ct.cumulative().capacity());
-  const std::vector<IntegerVariable> demands =
-      mapping->Integers(ct.cumulative().demands());
+  const AffineExpression capacity(mapping->Integer(ct.cumulative().capacity()));
+  std::vector<AffineExpression> demands;
+  for (const IntegerVariable var :
+       mapping->Integers(ct.cumulative().demands())) {
+    demands.push_back(AffineExpression(var));
+  }
   m->Add(Cumulative(intervals, demands, capacity));
 }
 
@@ -1711,7 +1720,7 @@ void LoadCircuitConstraint(const ConstraintProto& ct, Model* m) {
   std::vector<int> heads(circuit.heads().begin(), circuit.heads().end());
   std::vector<Literal> literals =
       m->GetOrCreate<CpModelMapping>()->Literals(circuit.literals());
-  const int num_nodes = ReindexArcs(&tails, &heads, &literals);
+  const int num_nodes = ReindexArcs(&tails, &heads);
   m->Add(SubcircuitConstraint(num_nodes, tails, heads, literals));
 }
 
@@ -1723,22 +1732,9 @@ void LoadRoutesConstraint(const ConstraintProto& ct, Model* m) {
   std::vector<int> heads(routes.heads().begin(), routes.heads().end());
   std::vector<Literal> literals =
       m->GetOrCreate<CpModelMapping>()->Literals(routes.literals());
-  const int num_nodes = ReindexArcs(&tails, &heads, &literals);
+  const int num_nodes = ReindexArcs(&tails, &heads);
   m->Add(SubcircuitConstraint(num_nodes, tails, heads, literals,
                               /*multiple_subcircuit_through_zero=*/true));
-}
-
-void LoadCircuitCoveringConstraint(const ConstraintProto& ct, Model* m) {
-  auto* mapping = m->GetOrCreate<CpModelMapping>();
-  const std::vector<IntegerVariable> nexts =
-      mapping->Integers(ct.circuit_covering().nexts());
-  const std::vector<std::vector<Literal>> graph =
-      GetSquareMatrixFromIntegerVariables(nexts, m);
-  const std::vector<int> distinguished(
-      ct.circuit_covering().distinguished_nodes().begin(),
-      ct.circuit_covering().distinguished_nodes().end());
-  m->Add(ExactlyOnePerRowAndPerColumn(graph));
-  m->Add(CircuitCovering(graph, distinguished));
 }
 
 bool LoadConstraint(const ConstraintProto& ct, Model* m) {
@@ -1772,8 +1768,8 @@ bool LoadConstraint(const ConstraintProto& ct, Model* m) {
     case ConstraintProto::ConstraintProto::kIntMin:
       LoadIntMinConstraint(ct, m);
       return true;
-    case ConstraintProto::ConstraintProto::kLinMin:
-      LoadLinMinConstraint(ct, m);
+    case ConstraintProto::ConstraintProto::kLinMax:
+      LoadLinMaxConstraint(ct, m);
       return true;
     case ConstraintProto::ConstraintProto::kIntMax:
       LoadIntMaxConstraint(ct, m);
@@ -1804,9 +1800,6 @@ bool LoadConstraint(const ConstraintProto& ct, Model* m) {
       return true;
     case ConstraintProto::ConstraintProto::kRoutes:
       LoadRoutesConstraint(ct, m);
-      return true;
-    case ConstraintProto::ConstraintProto::kCircuitCovering:
-      LoadCircuitCoveringConstraint(ct, m);
       return true;
     default:
       return false;

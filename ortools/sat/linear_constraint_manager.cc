@@ -15,8 +15,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
+#include "absl/container/flat_hash_set.h"
 #include "ortools/sat/integer.h"
 #include "ortools/sat/linear_constraint.h"
 
@@ -53,12 +55,24 @@ LinearConstraintManager::~LinearConstraintManager() {
   if (num_coeff_strenghtening_ > 0) {
     VLOG(2) << "num_coeff_strenghtening: " << num_coeff_strenghtening_;
   }
-  if (sat_parameters_.log_search_progress()) {
-    for (const auto entry : type_to_num_cuts_) {
+  if (sat_parameters_.log_search_progress() && num_cuts_ > 0) {
+    LOG(INFO) << "Total cuts added: " << num_cuts_ << " (out of "
+              << num_add_cut_calls_ << " calls) worker: '" << model_->Name()
+              << "'";
+    LOG(INFO) << "Num simplifications: " << num_simplifications_;
+    for (const auto& entry : type_to_num_cuts_) {
       LOG(INFO) << "Added " << entry.second << " cuts of type '" << entry.first
                 << "'.";
     }
   }
+}
+
+void LinearConstraintManager::RescaleActiveCounts(const double scaling_factor) {
+  for (ConstraintIndex i(0); i < constraint_infos_.size(); ++i) {
+    constraint_infos_[i].active_count *= scaling_factor;
+  }
+  constraint_active_count_increase_ *= scaling_factor;
+  VLOG(2) << "Rescaled active counts by " << scaling_factor;
 }
 
 bool LinearConstraintManager::MaybeRemoveSomeInactiveConstraints(
@@ -67,7 +81,6 @@ bool LinearConstraintManager::MaybeRemoveSomeInactiveConstraints(
   const glop::RowIndex num_rows(lp_constraints_.size());
   const glop::ColIndex num_cols =
       solution_state->statuses.size() - RowToColIndex(num_rows);
-
   int new_size = 0;
   for (int i = 0; i < num_rows; ++i) {
     const ConstraintIndex constraint_index = lp_constraints_[i];
@@ -111,6 +124,7 @@ bool LinearConstraintManager::MaybeRemoveSomeInactiveConstraints(
 LinearConstraintManager::ConstraintIndex LinearConstraintManager::Add(
     LinearConstraint ct, bool* added) {
   CHECK(!ct.vars.empty());
+  DCHECK(NoDuplicateVariable(ct));
   SimplifyConstraint(&ct);
   DivideByGCD(&ct);
   CanonicalizeConstraint(&ct);
@@ -143,14 +157,9 @@ LinearConstraintManager::ConstraintIndex LinearConstraintManager::Add(
   ConstraintInfo ct_info;
   ct_info.constraint = std::move(ct);
   ct_info.l2_norm = ComputeL2Norm(ct_info.constraint);
-  ct_info.is_in_lp = false;
-  ct_info.objective_parallelism_computed = false;
-  ct_info.objective_parallelism = 0.0;
-  ct_info.inactive_count = 0;
-  ct_info.permanently_removed = false;
   ct_info.hash = key;
   equiv_constraints_[key] = ct_index;
-
+  ct_info.active_count = constraint_active_count_increase_;
   constraint_infos_.push_back(std::move(ct_info));
   return ct_index;
 }
@@ -196,7 +205,9 @@ void LinearConstraintManager::ComputeObjectiveParallelism(
 // Cuts are also handled slightly differently than normal constraints.
 bool LinearConstraintManager::AddCut(
     LinearConstraint ct, std::string type_name,
-    const gtl::ITIVector<IntegerVariable, double>& lp_solution) {
+    const absl::StrongVector<IntegerVariable, double>& lp_solution,
+    std::string extra_info) {
+  ++num_add_cut_calls_;
   if (ct.vars.empty()) return false;
 
   const double activity = ComputeActivity(ct, lp_solution);
@@ -207,22 +218,84 @@ bool LinearConstraintManager::AddCut(
   // Only add cut with sufficient efficacy.
   if (violation / l2_norm < 1e-5) return false;
 
-  // Add the constraint. We only mark the constraint as a cut if it is not an
-  // update of an already existing one.
   bool added = false;
   const ConstraintIndex ct_index = Add(std::move(ct), &added);
+
+  // We only mark the constraint as a cut if it is not an update of an already
+  // existing one.
   if (!added) return false;
+
+  // TODO(user): Use better heuristic here for detecting good cuts and mark
+  // them undeletable.
+  constraint_infos_[ct_index].is_deletable = true;
 
   VLOG(1) << "Cut '" << type_name << "'"
           << " size=" << constraint_infos_[ct_index].constraint.vars.size()
           << " max_magnitude="
           << ComputeInfinityNorm(constraint_infos_[ct_index].constraint)
           << " norm=" << l2_norm << " violation=" << violation
-          << " eff=" << violation / l2_norm;
+          << " eff=" << violation / l2_norm << " " << extra_info;
 
   num_cuts_++;
+  num_deletable_constraints_++;
   type_to_num_cuts_[type_name]++;
   return true;
+}
+
+void LinearConstraintManager::PermanentlyRemoveSomeConstraints() {
+  std::vector<double> deletable_constraint_counts;
+  for (ConstraintIndex i(0); i < constraint_infos_.size(); ++i) {
+    if (constraint_infos_[i].is_deletable && !constraint_infos_[i].is_in_lp) {
+      deletable_constraint_counts.push_back(constraint_infos_[i].active_count);
+    }
+  }
+  if (deletable_constraint_counts.empty()) return;
+  std::sort(deletable_constraint_counts.begin(),
+            deletable_constraint_counts.end());
+
+  // We will delete the oldest (in the order they where added) cleanup target
+  // constraints with a count lower or equal to this.
+  double active_count_threshold = std::numeric_limits<double>::infinity();
+  if (sat_parameters_.cut_cleanup_target() <
+      deletable_constraint_counts.size()) {
+    active_count_threshold =
+        deletable_constraint_counts[sat_parameters_.cut_cleanup_target()];
+  }
+
+  ConstraintIndex new_size(0);
+  equiv_constraints_.clear();
+  absl::StrongVector<ConstraintIndex, ConstraintIndex> index_mapping(
+      constraint_infos_.size());
+  int num_deleted_constraints = 0;
+  for (ConstraintIndex i(0); i < constraint_infos_.size(); ++i) {
+    if (constraint_infos_[i].is_deletable && !constraint_infos_[i].is_in_lp &&
+        constraint_infos_[i].active_count <= active_count_threshold &&
+        num_deleted_constraints < sat_parameters_.cut_cleanup_target()) {
+      ++num_deleted_constraints;
+      continue;
+    }
+
+    if (i != new_size) {
+      constraint_infos_[new_size] = std::move(constraint_infos_[i]);
+    }
+    index_mapping[i] = new_size;
+
+    // Make sure we recompute the hash_map of identical constraints.
+    equiv_constraints_[constraint_infos_[new_size].hash] = new_size;
+    new_size++;
+  }
+  constraint_infos_.resize(new_size.value());
+
+  // Also update lp_constraints_
+  for (int i = 0; i < lp_constraints_.size(); ++i) {
+    lp_constraints_[i] = index_mapping[lp_constraints_[i]];
+  }
+
+  if (num_deleted_constraints > 0) {
+    VLOG(1) << "Constraint manager cleanup: #deleted:"
+            << num_deleted_constraints;
+  }
+  num_deletable_constraints_ -= num_deleted_constraints;
 }
 
 void LinearConstraintManager::SetObjectiveCoefficient(IntegerVariable var,
@@ -365,10 +438,11 @@ bool LinearConstraintManager::SimplifyConstraint(LinearConstraint* ct) {
 }
 
 bool LinearConstraintManager::ChangeLp(
-    const gtl::ITIVector<IntegerVariable, double>& lp_solution,
+    const absl::StrongVector<IntegerVariable, double>& lp_solution,
     glop::BasisState* solution_state) {
   VLOG(3) << "Enter ChangeLP, scan " << constraint_infos_.size()
           << " constraints";
+  const double saved_dtime = dtime_;
   std::vector<ConstraintIndex> new_constraints;
   std::vector<double> new_constraints_efficacies;
   std::vector<double> new_constraints_orthogonalities;
@@ -378,14 +452,16 @@ bool LinearConstraintManager::ChangeLp(
   last_simplification_timestamp_ = integer_trail_.num_level_zero_enqueues();
 
   // We keep any constraints that is already present, and otherwise, we add the
-  // ones that are currently not satisfied by at least "tolerance".
+  // ones that are currently not satisfied by at least "tolerance" to the set
+  // of potential new constraints.
+  bool rescale_active_count = false;
   const double tolerance = 1e-6;
   for (ConstraintIndex i(0); i < constraint_infos_.size(); ++i) {
-    if (constraint_infos_[i].permanently_removed) continue;
-
     // Inprocessing of the constraint.
     if (simplify_constraints &&
         SimplifyConstraint(&constraint_infos_[i].constraint)) {
+      ++num_simplifications_;
+
       // Note that the canonicalization shouldn't be needed since the order
       // of the variable is not changed by the simplification, and we only
       // reduce the coefficients at both end of the spectrum.
@@ -408,6 +484,10 @@ bool LinearConstraintManager::ChangeLp(
 
     if (constraint_infos_[i].is_in_lp) continue;
 
+    // ComputeActivity() often represent the bulk of the time spent in
+    // ChangeLP().
+    dtime_ += 1.7e-9 *
+              static_cast<double>(constraint_infos_[i].constraint.vars.size());
     const double activity =
         ComputeActivity(constraint_infos_[i].constraint, lp_solution);
     const double lb_violation =
@@ -432,8 +512,47 @@ bool LinearConstraintManager::ChangeLp(
       constraint_infos_[i].current_score =
           new_constraints_efficacies.back() +
           constraint_infos_[i].objective_parallelism;
+
+      if (constraint_infos_[i].is_deletable) {
+        constraint_infos_[i].active_count += constraint_active_count_increase_;
+        if (constraint_infos_[i].active_count >
+            sat_parameters_.cut_max_active_count_value()) {
+          rescale_active_count = true;
+        }
+      }
     }
   }
+
+  // Bump activities of active constraints in LP.
+  if (solution_state != nullptr) {
+    const glop::RowIndex num_rows(lp_constraints_.size());
+    const glop::ColIndex num_cols =
+        solution_state->statuses.size() - RowToColIndex(num_rows);
+
+    for (int i = 0; i < num_rows; ++i) {
+      const ConstraintIndex constraint_index = lp_constraints_[i];
+      const glop::VariableStatus row_status =
+          solution_state->statuses[num_cols + glop::ColIndex(i)];
+      if (row_status != glop::VariableStatus::BASIC &&
+          constraint_infos_[constraint_index].is_deletable) {
+        constraint_infos_[constraint_index].active_count +=
+            constraint_active_count_increase_;
+        if (constraint_infos_[constraint_index].active_count >
+            sat_parameters_.cut_max_active_count_value()) {
+          rescale_active_count = true;
+        }
+      }
+    }
+  }
+
+  if (rescale_active_count) {
+    CHECK_GT(sat_parameters_.cut_max_active_count_value(), 0.0);
+    RescaleActiveCounts(1.0 / sat_parameters_.cut_max_active_count_value());
+  }
+
+  // Update the increment counter.
+  constraint_active_count_increase_ *=
+      1.0 / sat_parameters_.cut_active_count_decay();
 
   // Remove constraints from the current LP that have been inactive for a while.
   // We do that after we computed new_constraints so we do not need to iterate
@@ -489,7 +608,6 @@ bool LinearConstraintManager::ChangeLp(
       }
 
       const ConstraintIndex new_constraint = new_constraints[j];
-      if (constraint_infos_[new_constraint].permanently_removed) continue;
       if (constraint_infos_[new_constraint].is_in_lp) continue;
 
       if (last_added_candidate != kInvalidConstraintIndex) {
@@ -503,15 +621,13 @@ bool LinearConstraintManager::ChangeLp(
             std::min(new_constraints_orthogonalities[j], current_orthogonality);
       }
 
-      // NOTE(user): It is safe to permanently remove this constraint as the
-      // constraint that is almost parallel to this constraint is present in the
-      // LP or is inactive for a long time and is removed from the LP. In either
-      // case, this constraint is not adding significant value and is only
-      // making the LP larger.
+      // NOTE(user): It is safe to not add this constraint as the constraint
+      // that is almost parallel to this constraint is present in the LP or is
+      // inactive for a long time and is removed from the LP. In either case,
+      // this constraint is not adding significant value and is only making the
+      // LP larger.
       if (new_constraints_orthogonalities[j] <
           sat_parameters_.min_orthogonality_for_lp_constraints()) {
-        constraint_infos_[new_constraint].permanently_removed = true;
-        VLOG(2) << "Constraint permanently removed: " << new_constraint;
         continue;
       }
 
@@ -545,6 +661,14 @@ bool LinearConstraintManager::ChangeLp(
     solution_state->statuses.resize(solution_state->statuses.size() + num_added,
                                     glop::VariableStatus::BASIC);
   }
+
+  // TODO(user): Instead of comparing num_deletable_constraints with cut
+  // limit, compare number of deletable constraints not in lp against the limit.
+  if (num_deletable_constraints_ > sat_parameters_.max_num_cuts()) {
+    PermanentlyRemoveSomeConstraints();
+  }
+
+  time_limit_->AdvanceDeterministicTime(dtime_ - saved_dtime);
 
   // The LP changed only if we added new constraints or if some constraints
   // already inside changed (simplification or tighter bounds).
@@ -581,6 +705,26 @@ bool LinearConstraintManager::DebugCheckConstraint(
     return false;
   }
   return true;
+}
+
+void TopNCuts::AddCut(
+    LinearConstraint ct, const std::string& name,
+    const absl::StrongVector<IntegerVariable, double>& lp_solution) {
+  if (ct.vars.empty()) return;
+  const double activity = ComputeActivity(ct, lp_solution);
+  const double violation =
+      std::max(activity - ToDouble(ct.ub), ToDouble(ct.lb) - activity);
+  const double l2_norm = ComputeL2Norm(ct);
+  cuts_.Add({name, ct}, violation / l2_norm);
+}
+
+void TopNCuts::TransferToManager(
+    const absl::StrongVector<IntegerVariable, double>& lp_solution,
+    LinearConstraintManager* manager) {
+  for (const CutCandidate& candidate : cuts_.UnorderedElements()) {
+    manager->AddCut(candidate.cut, candidate.name, lp_solution);
+  }
+  cuts_.Clear();
 }
 
 }  // namespace sat

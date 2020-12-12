@@ -22,10 +22,15 @@
 #include "ortools/bop/bop_util.h"
 #include "ortools/bop/complete_optimizer.h"
 #include "ortools/sat/boolean_problem.h"
+#include "ortools/sat/boolean_problem.pb.h"
 #include "ortools/sat/symmetry.h"
 
 namespace operations_research {
 namespace bop {
+
+using ::operations_research::sat::LinearBooleanProblem;
+using ::operations_research::sat::LinearObjective;
+
 namespace {
 void BuildObjectiveTerms(const LinearBooleanProblem& problem,
                          BopConstraintTerms* objective_terms) {
@@ -327,7 +332,7 @@ void PortfolioOptimizer::CreateOptimizers(
 // OptimizerSelector
 //------------------------------------------------------------------------------
 OptimizerSelector::OptimizerSelector(
-    const gtl::ITIVector<OptimizerIndex, BopOptimizerBase*>& optimizers)
+    const absl::StrongVector<OptimizerIndex, BopOptimizerBase*>& optimizers)
     : run_infos_(), selected_index_(optimizers.size()) {
   for (OptimizerIndex i(0); i < optimizers.size(); ++i) {
     info_positions_.push_back(run_infos_.size());

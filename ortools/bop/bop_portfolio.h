@@ -75,10 +75,10 @@ class PortfolioOptimizer : public BopOptimizerBase {
  private:
   BopOptimizerBase::Status SynchronizeIfNeeded(
       const ProblemState& problem_state);
-  void AddOptimizer(const LinearBooleanProblem& problem,
+  void AddOptimizer(const sat::LinearBooleanProblem& problem,
                     const BopParameters& parameters,
                     const BopOptimizerMethod& optimizer_method);
-  void CreateOptimizers(const LinearBooleanProblem& problem,
+  void CreateOptimizers(const sat::LinearBooleanProblem& problem,
                         const BopParameters& parameters,
                         const BopSolverOptimizerSet& optimizer_set);
 
@@ -86,7 +86,7 @@ class PortfolioOptimizer : public BopOptimizerBase {
   int64 state_update_stamp_;
   BopConstraintTerms objective_terms_;
   std::unique_ptr<OptimizerSelector> selector_;
-  gtl::ITIVector<OptimizerIndex, BopOptimizerBase*> optimizers_;
+  absl::StrongVector<OptimizerIndex, BopOptimizerBase*> optimizers_;
   sat::SatSolver sat_propagator_;
   BopParameters parameters_;
   double lower_bound_;
@@ -101,7 +101,7 @@ class OptimizerSelector {
   // Note that the list of optimizers is only used to get the names for
   // debug purposes, the ownership of the optimizers is not transferred.
   explicit OptimizerSelector(
-      const gtl::ITIVector<OptimizerIndex, BopOptimizerBase*>& optimizers);
+      const absl::StrongVector<OptimizerIndex, BopOptimizerBase*>& optimizers);
 
   // Selects the next optimizer to run based on the user defined order and
   // history of success. Returns kInvalidOptimizerIndex if no optimizer is
@@ -127,7 +127,7 @@ class OptimizerSelector {
   // solution.
   //
   // The time spent corresponds to the time the optimizer spent; To make the
-  // behavior deterministic, it is recommanded to use the deterministic time
+  // behavior deterministic, it is recommended to use the deterministic time
   // instead of the elapsed time.
   //
   // The optimizers are sorted based on their score each time a new solution is
@@ -193,7 +193,7 @@ class OptimizerSelector {
   };
 
   std::vector<RunInfo> run_infos_;
-  gtl::ITIVector<OptimizerIndex, int> info_positions_;
+  absl::StrongVector<OptimizerIndex, int> info_positions_;
   int selected_index_;
 };
 
